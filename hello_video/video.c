@@ -92,7 +92,7 @@ extern "C" {
 
 
 #define NUM_CAMS                16
-#define CAMERA_BUFFER_SIZE      20000           // bytes
+#define CAMERA_BUFFER_SIZE      50000           // bytes
 
 typedef enum
 {
@@ -158,10 +158,12 @@ static LAYOUT windowLayout [LAYOUT_TYPE_MAX] =
 
 typedef struct winData
 {
-    int         cameraNumber;       // active camera stream in window
-    WIN_RECT    winDim;             // window dimensions
-    pthread_t   vidThread; 
-    int         id;
+    int                         cameraNumber;       // active camera stream in window
+    WIN_RECT                    winDim;             // window dimensions
+    pthread_t                   vidThread; 
+    int                         id;
+    OMX_DISPLAYTRANSFORMTYPE    transform;
+    OMX_DISPLAYMODETYPE         mode;
 } WIN_DATA;
 
 
@@ -251,7 +253,8 @@ void IDISCALLBACK frameLoaded (IDISHWATCH hWatch, IDISWPARAM wParam, IDISLPARAM 
     }
     
     int                 val     = 0;
-    int                 wr_size = frame->_szBuffer;    
+    int                 offset  = watch_getFrameDataOffset (hWatch, work.channel, frame->_lpBuffer);
+    int                 wr_size = frame->_szBuffer + offset;    
     
     if (frame->_hostcamera < 0 || frame->_hostcamera >= NUM_CAMS)
     {
@@ -286,12 +289,13 @@ void IDISCALLBACK frameLoaded (IDISHWATCH hWatch, IDISWPARAM wParam, IDISLPARAM 
             }
         }
     }
-         
+             
+    
     // write as much data into the buffer as we can
     if ((buff->end + (int)frame->_szBuffer) >= buff->size)
         wr_size = buff->size - buff->end;
         
-    memcpy(&buff->ptr[buff->end], frame->_lpBuffer, wr_size);
+    memcpy(&buff->ptr[buff->end], &frame->_lpBuffer[abs(offset)], wr_size);
     buff->end += wr_size;
     
     // update the max used value for the buffer, if necessary
@@ -446,9 +450,14 @@ static void *playVideo (void *userData)
     
     display_region.nPortIndex         = 90;
     display_region.set                = (OMX_DISPLAYSETTYPE)(OMX_DISPLAY_SET_NUM | OMX_DISPLAY_SET_FULLSCREEN | OMX_DISPLAY_SET_MODE | OMX_DISPLAY_SET_DEST_RECT);
+    if (data->transform)
+        display_region.set =  (OMX_DISPLAYSETTYPE)( display_region.set | OMX_DISPLAY_SET_TRANSFORM);
+                                                
     display_region.num                = 0;
     display_region.fullscreen         = OMX_FALSE;
-    display_region.mode               = OMX_DISPLAY_MODE_LETTERBOX; // OMX_DISPLAY_MODE_FILL;
+    
+    display_region.mode               = data->mode;
+    display_region.transform          = data->transform; 
     display_region.dest_rect.width    = data->winDim.w;
     display_region.dest_rect.height   = data->winDim.h;
     display_region.dest_rect.x_offset = data->winDim.x;
@@ -478,7 +487,6 @@ static void *playVideo (void *userData)
     format.nVersion.nVersion  = OMX_VERSION;
     format.nPortIndex         = 130;
     format.eCompressionFormat = OMX_VIDEO_CodingAVC;
-
     
     if(status == 0 &&
         OMX_SetParameter(ILC_GET_HANDLE(video_decode), OMX_IndexParamVideoPortFormat, &format) == OMX_ErrorNone &&
@@ -513,7 +521,6 @@ static void *playVideo (void *userData)
                     printf("%s: Failed to set display region for render output port 90", __func__);
                 }
             }
-
 
             data_len += readPacket((void*)&work.bd[data->cameraNumber],  dest,  buf->nAllocLen-data_len);
             
@@ -725,7 +732,6 @@ int main (int argc, char **argv)
         return 0;
     }
 
-    
     // calculate all the window sizes based on the current screen dimensions
     if(graphics_get_display_size(0, &screen_width, &screen_height) < 0) 
     {
@@ -773,16 +779,23 @@ int main (int argc, char **argv)
         work.bd[cam].maxSize = 0;
         sem_init (&work.bd[cam].mutex, 0, 0); 
         
-        work.windows[cam].cameraNumber = cam;  //4 + num;
+        work.windows[cam].cameraNumber = cam;
         work.windows[cam].winDim       = {0,0,0,0};
-        work.windows[cam].id           = cam;
+        work.windows[cam].id           = cam;      
+        work.windows[cam].mode         = OMX_DISPLAY_MODE_LETTERBOX;
+       
+        // as an experiment, overy third window is mirrored and cropped
+        if (cam % 3 == 0)
+        {
+        work.windows[cam].transform = OMX_DISPLAY_MIRROR_ROT0;
+        work.windows[cam].mode      = OMX_DISPLAY_MODE_FILL;
+        }
             
         err = pthread_create (&work.windows[cam].vidThread, 0, &playVideo, (void*)&work.windows[cam]);
         if (err != 0)
         {
             printf ("%s: create video thread failed\n", __func__);
-        }
-        
+        }        
     }
                
     // calculate the number of windows in the layout
@@ -792,7 +805,7 @@ int main (int argc, char **argv)
 
     for (int num = 0; num < work.numWindows; num++)
     {
-        work.windows[num].cameraNumber = num;  //4 + num;
+        work.windows[num].cameraNumber = num;
         work.windows[num].winDim       = windowLayout[work.layout].rects[num];
     }
     
