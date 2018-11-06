@@ -341,6 +341,15 @@ void IDISCALLBACK watchConnected (IDISHWATCH hWatch, IDISWPARAM wParam, IDISLPAR
     }    
 }
 
+void ms_sleep(unsigned int msec)
+{
+    struct timespec ts_sleep, ts_remaining;
+    ts_sleep.tv_sec = msec / 1000;
+    ts_sleep.tv_nsec = (msec % 1000) * 1000000;
+    nanosleep(&ts_sleep, &ts_remaining);
+}
+
+#define WAIT_RETRY 40
 
 /*  -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 //  Method:  initWatcher ()
@@ -353,14 +362,11 @@ void IDISCALLBACK watchConnected (IDISHWATCH hWatch, IDISWPARAM wParam, IDISLPAR
 
 int initWatcher (WORK *workPtr)
 {
-    workPtr->watch = watch_initialize ();
+    int waitCount = 0;
 
-    if (workPtr->watch != IDISHNULL)
-    {
-        
-        watch_registerCallback (workPtr->watch, CALLBACK_WATCH::FRAMELOADED, frameLoaded);
-        watch_registerCallback (workPtr->watch, CALLBACK_WATCH::ONCONNECTED, watchConnected);
-        
+    workPtr->watch = watch_initialize ();
+    if (workPtr->watch != IDISHNULL) {
+	watch_registerCallback (workPtr->watch, CALLBACK_WATCH::FRAMELOADED, frameLoaded); watch_registerCallback (workPtr->watch, CALLBACK_WATCH::ONCONNECTED, watchConnected); 
         watch_startup (workPtr->watch, NUM_CAMS);
         
         workPtr->channel = watch_connect(workPtr->watch, _T("jon's dvr"), _T("192.168.125.25"), _T("admin"), _T("AVT7100"), 8200, 0, NULL);
@@ -376,6 +382,29 @@ int initWatcher (WORK *workPtr)
         return -1;
     }   
    
+    // complete connecting before proceeding
+    while (watch_isConnecting(workPtr->watch, workPtr->channel) && !watch_isConnected(workPtr->watch, workPtr->channel) && waitCount < WAIT_RETRY) {
+        ms_sleep(300);
+        waitCount++;
+    }
+    if (waitCount == WAIT_RETRY) {
+        printf("%s: Failed to connect after %d milliseconds\n", __func__, WAIT_RETRY*300);
+        watch_disconnect(workPtr->watch, workPtr->channel);
+        watch_cleanup(workPtr->watch);
+        watch_finalize(workPtr->watch);
+        return -1;
+    }
+    if (!watch_isConnected(workPtr->watch, workPtr->channel)) {
+        printf("%s: Failed to connect\n", __func__);
+        watch_disconnect(workPtr->watch, workPtr->channel);
+        watch_cleanup(workPtr->watch);
+        watch_finalize(workPtr->watch);
+        return -1;
+    }
+    else
+        printf("%s: successful connection\n", __func__);
+
+
     return 0;
 }
 
